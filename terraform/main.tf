@@ -1,128 +1,118 @@
-# =========================
-# VPC
-# =========================
-# Creamos una VPC con rango privado 10.0.0.0/16
-# Habilitamos soporte DNS y hostnames para los recursos dentro de la VPC
+# ---------------------------
+# Networking: VPC and Subnets
+# ---------------------------
+
+# Create a custom VPC for the application
 resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
   enable_dns_support   = true
   enable_dns_hostnames = true
 
-  tags = { Name = "online-boutique-vpc" }
+  tags = {
+    Name = "online-boutique-vpc"
+  }
 }
 
-# =========================
-# Subredes públicas
-# =========================
-# Subred en AZ us-east-2a que asigna IP pública automáticamente
+# Create a public subnet in Availability Zone 1 (us-east-2a)
 resource "aws_subnet" "public_az1" {
-  vpc_id                 = aws_vpc.main.id
-  cidr_block             = "10.0.1.0/24"
-  availability_zone      = "us-east-2a"
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = "us-east-2a"
   map_public_ip_on_launch = true
-  tags = { Name = "online-boutique-public-subnet-az1" }
+
+  tags = {
+    Name                                      = "online-boutique-public-subnet-az1"
+    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
+    "kubernetes.io/role/elb"                  = "1"
+  }
 }
 
-# Subred en AZ us-east-2b que asigna IP pública automáticamente
+# Create a public subnet in Availability Zone 2 (us-east-2b)
 resource "aws_subnet" "public_az2" {
-  vpc_id                 = aws_vpc.main.id
-  cidr_block             = "10.0.3.0/24"
-  availability_zone      = "us-east-2b"
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.3.0/24"
+  availability_zone       = "us-east-2b"
   map_public_ip_on_launch = true
-  tags = { Name = "online-boutique-public-subnet-az2" }
+
+  tags = {
+    Name                                      = "online-boutique-public-subnet-az2"
+    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
+    "kubernetes.io/role/elb"                  = "1"
+  }
 }
 
-# =========================
-# Subredes privadas
-# =========================
-# Subred privada en AZ us-east-2a
+# Create a private subnet in Availability Zone 1 (us-east-2a)
 resource "aws_subnet" "private_az1" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = "10.0.2.0/24"
   availability_zone = "us-east-2a"
-  tags = { Name = "online-boutique-private-subnet-az1" }
+
+  tags = {
+    Name                                      = "online-boutique-private-subnet-az1"
+    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
+    "kubernetes.io/role/internal-elb"         = "1"
+  }
 }
 
-# Subred privada en AZ us-east-2b
+# Create a private subnet in Availability Zone 2 (us-east-2b)
 resource "aws_subnet" "private_az2" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = "10.0.4.0/24"
   availability_zone = "us-east-2b"
-  tags = { Name = "online-boutique-private-subnet-az2" }
+
+  tags = {
+    Name                                      = "online-boutique-private-subnet-az2"
+    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
+    "kubernetes.io/role/internal-elb"         = "1"
+  }
 }
 
-# =========================
-# IAM Role para EKS (Control Plane)
-# =========================
-# Rol que EKS usará para crear y administrar el clúster
-resource "aws_iam_role" "eks_cluster_role" {
-  name = "online-boutique-eks-role"
+# ---------------------------
+# Internet Gateway & Routing
+# ---------------------------
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = { Service = "eks.amazonaws.com" }
-        Action = "sts:AssumeRole"
-      }
-    ]
-  })
+# Internet Gateway for outbound internet access from public subnets
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name = "online-boutique-igw"
+  }
 }
 
-# Adjuntamos políticas necesarias al rol del clúster
-resource "aws_iam_role_policy_attachment" "eks_cluster_AmazonEKSClusterPolicy" {
-  role       = aws_iam_role.eks_cluster_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+# Route table for public subnets with default route to Internet Gateway
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.igw.id
+  }
+
+  tags = {
+    Name = "online-boutique-public-rt"
+  }
 }
 
-resource "aws_iam_role_policy_attachment" "eks_cluster_AmazonEKSServicePolicy" {
-  role       = aws_iam_role.eks_cluster_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSServicePolicy"
+# Associate public subnets with the public route table
+resource "aws_route_table_association" "public_az1" {
+  subnet_id      = aws_subnet.public_az1.id
+  route_table_id = aws_route_table.public.id
 }
 
-# =========================
-# IAM Role para Node Group (Worker Nodes)
-# =========================
-# Rol que los nodos worker usarán para interactuar con AWS
-resource "aws_iam_role" "eks_node_role" {
-  name = "online-boutique-eks-node-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = { Service = "ec2.amazonaws.com" }
-        Action = "sts:AssumeRole"
-      }
-    ]
-  })
+resource "aws_route_table_association" "public_az2" {
+  subnet_id      = aws_subnet.public_az2.id
+  route_table_id = aws_route_table.public.id
 }
 
-# Adjuntamos políticas para nodos worker
-resource "aws_iam_role_policy_attachment" "eks_node_AmazonEKSWorkerNodePolicy" {
-  role       = aws_iam_role.eks_node_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
-}
-
-resource "aws_iam_role_policy_attachment" "eks_node_AmazonEKS_CNI_Policy" {
-  role       = aws_iam_role.eks_node_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
-}
-
-resource "aws_iam_role_policy_attachment" "eks_node_AmazonEC2ContainerRegistryReadOnly" {
-  role       = aws_iam_role.eks_node_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-}
-
-# =========================
+# ---------------------------
 # EKS Cluster
-# =========================
-# Creamos el clúster EKS usando el rol de control plane y las subredes definidas
+# ---------------------------
+
+# Create an Amazon EKS cluster using the VPC subnets
 resource "aws_eks_cluster" "main" {
   name     = "online-boutique-cluster"
-  role_arn = aws_iam_role.eks_cluster_role.arn
+  role_arn = var.eks_role_arn  # IAM role for EKS control plane
 
   vpc_config {
     subnet_ids = [
@@ -133,49 +123,207 @@ resource "aws_eks_cluster" "main" {
     ]
   }
 
-  tags = { Name = "online-boutique-eks" }
+  tags = {
+    Name = "online-boutique-eks"
+  }
 }
 
-# =========================
-# Managed Node Group
-# =========================
-# Creamos nodos worker gestionados para ejecutar pods
-resource "aws_eks_node_group" "main" {
-  cluster_name    = aws_eks_cluster.main.name
-  node_group_name = "online-boutique-nodegroup"
-  node_role_arn   = aws_iam_role.eks_node_role.arn
+# ------------------------------------------
+# ECR Repositories for All Microservices
+# ------------------------------------------
 
-  # Nodos en subredes privadas
-  subnet_ids      = [
-    aws_subnet.private_az1.id,
-    aws_subnet.private_az2.id
+locals {
+  microservices = [
+    "adservice",
+    "cartservice",
+    "checkoutservice",
+    "currencyservice",
+    "emailservice",
+    "frontend",
+    "loadgenerator",
+    "paymentservice",
+    "productcatalogservice",
+    "recommendationservice",
+    "shippingservice",
+    "shoppingassistantservice"
   ]
+  # Derive effective instance type respecting free_tier_mode flag
+  effective_node_instance_type = var.free_tier_mode ? "t3.micro" : var.node_instance_type
+}
 
-  # Configuración de escalado automático
-  scaling_config {
-    desired_size = 2
-    max_size     = 3
-    min_size     = 1
+resource "aws_ecr_repository" "microservices" {
+  for_each = toset(local.microservices)
+  name     = each.key
+
+  image_scanning_configuration {
+    scan_on_push = true
   }
-
-  #instancia EC2 para los nodos
-  instance_types = ["t3.medium"]
 
   tags = {
-    Name = "online-boutique-nodegroup"
+    Name = each.key
   }
-
-  # Espera a que el clúster esté listo antes de crear nodos
-  depends_on = [
-    aws_eks_cluster.main
-  ]
 }
 
-# =========================
-# ECR Repository
-# =========================
-# Repositorio de imágenes Docker
-resource "aws_ecr_repository" "app_repo" {
-  name = "online-boutique"
-  tags = { Name = "online-boutique-ecr" }
+# ---------------------------
+# EKS Managed Node Group
+# ---------------------------
+
+resource "aws_eks_node_group" "default" {
+  cluster_name    = aws_eks_cluster.main.name
+  node_group_name = var.node_group_name
+  # Use provided role if given, else the one created conditionally in iam-node-role.tf
+  node_role_arn   = local.create_node_role ? aws_iam_role.eks_node_role[0].arn : var.node_group_role_arn
+  capacity_type   = var.use_spot ? "SPOT" : "ON_DEMAND"
+
+  subnet_ids = [
+    aws_subnet.public_az1.id,
+    aws_subnet.public_az2.id
+  ]
+
+  scaling_config {
+    desired_size = var.desired_capacity
+    max_size     = var.max_size
+    min_size     = var.min_size
+  }
+
+  instance_types = [local.effective_node_instance_type]
+  disk_size      = var.node_disk_size
+
+  tags = {
+    Name                                        = var.node_group_name
+    # Tags for Cluster Autoscaler auto-discovery
+    "k8s.io/cluster-autoscaler/enabled"         = "true"
+    "k8s.io/cluster-autoscaler/${var.cluster_name}" = "owned"
+  }
+
+  depends_on = [aws_eks_cluster.main]
+}
+
+# Optional secondary SPOT node group for cost-optimized workloads
+resource "aws_eks_node_group" "spot" {
+  count          = var.enable_spot_node_group ? 1 : 0
+  cluster_name   = aws_eks_cluster.main.name
+  node_group_name = var.spot_node_group_name
+  node_role_arn  = local.create_node_role ? aws_iam_role.eks_node_role[0].arn : var.node_group_role_arn
+  capacity_type  = "SPOT"
+
+  subnet_ids = [
+    aws_subnet.public_az1.id,
+    aws_subnet.public_az2.id
+  ]
+
+  scaling_config {
+    desired_size = var.spot_desired_capacity
+    max_size     = var.spot_max_size
+    min_size     = var.spot_min_size
+  }
+
+  instance_types = var.spot_instance_types
+  disk_size      = var.node_disk_size
+
+  labels = {
+    lifecycle = "spot"
+    role      = "workload"
+  }
+
+  tags = {
+    Name                                        = var.spot_node_group_name
+    Lifecycle                                   = "spot"
+    # Tags for Cluster Autoscaler auto-discovery
+    "k8s.io/cluster-autoscaler/enabled"         = "true"
+    "k8s.io/cluster-autoscaler/${var.cluster_name}" = "owned"
+  }
+
+  # NOTE: To strictly schedule certain workloads onto spot nodes, add:
+  # nodeSelector:
+  #   lifecycle: spot
+  # or use affinity/taints.
+
+  depends_on = [aws_eks_cluster.main]
+}
+
+# ---------------------------
+# IRSA for Cluster Autoscaler
+# ---------------------------
+
+data "aws_eks_cluster" "this" {
+  name = aws_eks_cluster.main.name
+}
+
+data "aws_eks_cluster_auth" "this" {
+  name = aws_eks_cluster.main.name
+}
+
+# Retrieve TLS cert to compute OIDC provider thumbprint
+data "tls_certificate" "oidc" {
+  url = aws_eks_cluster.main.identity[0].oidc[0].issuer
+}
+
+# Create IAM OIDC provider for the EKS cluster (required for IRSA)
+resource "aws_iam_openid_connect_provider" "eks" {
+  url = aws_eks_cluster.main.identity[0].oidc[0].issuer
+  client_id_list = ["sts.amazonaws.com"]
+  thumbprint_list = [data.tls_certificate.oidc.certificates[0].sha1_fingerprint]
+}
+
+locals {
+  ca_sa_name      = "cluster-autoscaler"
+  ca_sa_namespace = "kube-system"
+  ca_oidc_provider_url = replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")
+}
+
+# IAM policy for Cluster Autoscaler (minimal actions)
+data "aws_iam_policy_document" "ca_policy" {
+  statement {
+    sid     = "CAClusterScaling"
+    actions = [
+      "autoscaling:DescribeAutoScalingGroups",
+      "autoscaling:DescribeAutoScalingInstances",
+      "autoscaling:DescribeLaunchConfigurations",
+      "autoscaling:DescribeTags",
+      "ec2:DescribeLaunchTemplateVersions",
+      "autoscaling:SetDesiredCapacity",
+      "autoscaling:TerminateInstanceInAutoScalingGroup",
+      "autoscaling:UpdateAutoScalingGroup"
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_policy" "ca" {
+  name        = "${var.cluster_name}-cluster-autoscaler"
+  description = "Permissions for Kubernetes Cluster Autoscaler"
+  policy      = data.aws_iam_policy_document.ca_policy.json
+}
+
+# Trust policy for service account via OIDC
+data "aws_iam_policy_document" "ca_trust" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+  identifiers = [aws_iam_openid_connect_provider.eks.arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${local.ca_oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:${local.ca_sa_namespace}:${local.ca_sa_name}"]
+    }
+  }
+}
+
+resource "aws_iam_role" "ca" {
+  name               = "${var.cluster_name}-cluster-autoscaler"
+  assume_role_policy = data.aws_iam_policy_document.ca_trust.json
+}
+
+resource "aws_iam_role_policy_attachment" "ca_attach" {
+  role       = aws_iam_role.ca.name
+  policy_arn = aws_iam_policy.ca.arn
+}
+
+output "cluster_autoscaler_role_arn" {
+  description = "IAM role ARN for Kubernetes Cluster Autoscaler (IRSA)"
+  value       = aws_iam_role.ca.arn
 }
