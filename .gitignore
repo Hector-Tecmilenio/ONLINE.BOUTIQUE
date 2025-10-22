@@ -6,7 +6,10 @@
 .project
 .skaffold-*.yaml
 .terraform.lock.hcl
-.terraform/*
+.terraform/
+terraform.exe
+kubectl.exe
+*.exe
 .venv/
 .vs/
 .vscode/
